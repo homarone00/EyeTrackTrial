@@ -3,7 +3,11 @@
 Real-time gaze tracking from a close-up eye camera with
 [VOGeo-Gaze](https://github.com/DSGZ-MotionLab/VOGeo-Gaze) (MICCAI 2026), plus a calibration and an
 accuracy trial that measures where on the screen the system thinks the participant is looking.
-The GUI follows the SmartAnkle launcher: same theme and Italian labels, and a **MODALITÀ** selector (*Live* | *Prova*) at the top of the left column, like SmartAnkle's experiment selector, instead of tabs. The last mode is remembered.
+The GUI follows the SmartAnkle launcher (same theme, Italian labels) and fits on one screen. All settings are in collapsible
+sections on the left (*Sorgente video*, *Modello*, *Partecipante e schermo*, *Calibrazione*, *Esperimento*, *Stato*), closed
+at start, each showing a one-line summary of its values. The action buttons are pinned below them in the order
+they are used: **▶ Avvia** / **■ Ferma**, **1 · Calibrazione**, **2 · Esperimento**, *Apri cartella risultati*. On the right:
+camera, segmentation and participant-screen map, the gaze trace and calibration quality, and the error tables.
 
 ```
 python app.py
@@ -36,12 +40,12 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_
 **CPU only.** Same, with `--index-url https://download.pytorch.org/whl/cpu`. The model then runs at
 about 10–15 frames/s on a laptop CPU, enough to try the program but slow for saccades.
 
-In **Live** mode, *Dispositivo* lists every NVIDIA GPU torch can see (`GPU 0 · <name>`),
+In the *Modello* section, *Dispositivo* lists every NVIDIA GPU torch can see (`GPU 0 · <name>`),
 *Automatico* (GPU when available) and *CPU*. *Mezza precisione fp16* runs the network in half
 precision on the GPU (faster on RTX cards). The *GPU NVIDIA* chip in the header turns red when the
 installed PyTorch is CPU-only.
 
-## Live mode
+## Video and model
 
 - **Ingresso**: every camera Windows reports (names via DirectShow), a recorded eye video
   (*File video...*, played in real time, looping) or *Simulatore occhio (test)*, a synthetic eye
@@ -68,13 +72,13 @@ The centre needs a few seconds of eye movement to settle (*Centro occhio: stimat
 **frozen at the start of calibration** and stays frozen for the experiment, so the calibration
 mapping remains valid. *Reimposta centro occhio* starts over and invalidates the calibration.
 
-## Prova mode
+## Calibration and experiment
 
 1. **Calibrazione**: 5, 9, 13 (default), 17 or 25 points on the participant screen, centre first,
    the rest shuffled. Each dot shrinks for 0.6 s and is then held for *Durata per punto*. The
    robust median of the valid samples of every point (blinks and low-confidence frames dropped)
    is mapped to the screen with a second-order polynomial in (θH, θV) (affine with fewer than 8
-   points). Prova shows the mean / max residual and the leave-one-out error, and draws each
+   points). The CALIBRAZIONE panel shows the mean / max residual and the leave-one-out error, and draws each
    point with its fitted gaze. From then on, the red dot on the map is the live gaze.
 2. **Esperimento**: the selected target types, shuffled:
 
@@ -100,7 +104,7 @@ trial runs fullscreen over the GUI. On the participant screen, `Space` starts, `
 - The eyelid covers the top of the pupil before the score drops, and the eye makes a small movement
   on reopening, so samples from **100 ms before to 150 ms after** each blink are excluded too.
 - Blink frames are not fed to F_tem, so they don't pull the eyeball centre.
-- **Live**: the camera view gets an orange border labelled *OCCHIO CHIUSO*, *Ammiccamenti* shows the
+- **Live view**: the camera view gets an orange border labelled *OCCHIO CHIUSO*, *Ammiccamenti* shows the
   count and the rate per minute, and closed periods are shaded grey in the gaze trace.
 - **Repeats**: a calibration point or trial whose analysis window keeps less than 50 % valid samples
   (or fewer than 5) is replayed at the end of the sequence, in the same window, up to *n* times

@@ -64,20 +64,14 @@ def apply_theme(root):
                     font=(FONT_FAMILY, FONT_SIZE, "bold"))
     style.configure("Description.TLabel", background=c["bg"], foreground=c["muted"],
                     font=(FONT_FAMILY, FONT_SIZE - 2, "italic"))
+    style.configure("Chevron.TLabel", background=c["card"], foreground=c["accent"],
+                    font=(FONT_FAMILY, FONT_SIZE + 2, "bold"))
     style.configure("Summary.TLabel", background=c["card"], foreground=c["muted"],
                     font=(FONT_FAMILY, FONT_SIZE - 3))
     style.configure("Footer.TLabel", background=c["bg"], foreground=c["muted"],
                     font=(FONT_FAMILY, FONT_SIZE - 4))
     style.configure("Section.TLabel", background=c["bg"], foreground=c["muted"],
                     font=(FONT_FAMILY, FONT_SIZE - 3, "bold"))
-
-    # Mode selector: radio buttons drawn as a segmented control (as SmartAnkle's experiment selector)
-    style.configure("Segment.Toolbutton", background=c["card"], foreground=c["text"],
-                    padding=(22, 8), borderwidth=1, relief="flat", anchor="center",
-                    font=(FONT_FAMILY, FONT_SIZE, "bold"))
-    style.map("Segment.Toolbutton",
-              background=[("selected", c["accent"]), ("active", c["accent_soft"])],
-              foreground=[("selected", "white")])
 
     style.configure("TNotebook", background=c["bg"], borderwidth=0, tabmargins=(24, 10, 24, 0))
     style.configure("TNotebook.Tab", background=c["bg"], foreground=c["muted"], padding=(22, 8),

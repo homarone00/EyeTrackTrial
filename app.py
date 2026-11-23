@@ -40,12 +40,8 @@ RESOLUTIONS = {"Predefinita": None, "640×480": (640, 480), "1280×720": (1280, 
 CAL_POINTS = ["5", "9", "13", "17", "25"]
 DEFAULT_COUNTS = {"punto_piccolo": 10, "punto_grande": 10, "saccade": 10, "inseguimento": 3,
                   "lettera": 8, "immagine": 8}
-VIEW_SCALE = 1.35         # largest display scale of the 320x240 canvas (432x324); smaller if the window is
+VIEW_SCALE = 1.2          # largest display scale of the 320x240 canvas (384x288); smaller if the window is
 TRACE_SECONDS = 10.0
-MODES = {
-    "Live": "Sorgente video, modello e segmentazione in tempo reale.",
-    "Prova": "Calibrazione e misura dell'errore sullo schermo del partecipante.",
-}
 TYPE_COLORS = {"punto_piccolo": "#2563eb", "punto_grande": "#0ea5e9", "saccade": "#a855f7",
                "inseguimento": "#16a34a", "lettera": "#f59e0b", "immagine": "#ef4444"}
 
@@ -104,8 +100,7 @@ class ScrollColumn(ttk.Frame):
         self._win = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
         self.inner.bind("<Configure>", self._update)
         self.canvas.bind("<Configure>", self._update)
-        self.canvas.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._wheel))
-        self.canvas.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
+        self.canvas.bind_all("<MouseWheel>", self._wheel, add="+")
         self._shown = False
 
     def _update(self, _=None):
@@ -123,8 +118,45 @@ class ScrollColumn(ttk.Frame):
         self._shown = overflow
 
     def _wheel(self, event):
-        if self._shown:
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        if self._shown and widget is not None and str(widget).startswith(str(self)):
             self.canvas.yview_scroll(int(-event.delta / 120), "units")
+
+
+class Collapsible(ttk.Frame):
+    """Card with a clickable header (chevron, title, one-line summary) and a body that
+    opens and closes, like the advanced-parameters card of SmartAnkle.  Closed at start."""
+
+    def __init__(self, parent, title, on_toggle=None):
+        super().__init__(parent, style="Card.TFrame")
+        self.on_toggle = on_toggle
+        head = ttk.Frame(self, style="Inner.TFrame", padding=(12, 8))
+        head.pack(fill="x")
+        self.chevron = ttk.Label(head, text="▸", style="Chevron.TLabel", width=2)
+        self.chevron.pack(side="left")
+        title_label = ttk.Label(head, text=title, style="CardTitle.TLabel")
+        title_label.pack(side="left")
+        self.summary = ttk.Label(head, text="", style="Summary.TLabel")
+        self.summary.pack(side="right")
+        for w in (head, self.chevron, title_label, self.summary):
+            w.bind("<Button-1>", lambda e: self.toggle())
+            w.configure(cursor="hand2")
+        self.body = ttk.Frame(self, style="Inner.TFrame", padding=(14, 0, 14, 10))
+        self.body.columnconfigure(1, weight=1)
+        self.is_open = False
+
+    def toggle(self):
+        self.is_open = not self.is_open
+        if self.is_open:
+            self.body.pack(fill="x")
+        else:
+            self.body.pack_forget()
+        self.chevron.configure(text="▾" if self.is_open else "▸")
+        if self.on_toggle:
+            self.on_toggle()
+
+    def set_summary(self, text, limit=34):
+        self.summary.configure(text=text if len(text) <= limit else text[:limit - 1] + "…")
 
 
 # ---- application --------------------------------------------------------------------
@@ -160,19 +192,12 @@ class App:
         self._build_header()
         ttk.Label(root, text="Developed by Omar Carpentiero", style="Footer.TLabel",
                   padding=(24, 0, 24, 4)).pack(side="bottom", anchor="e")
-        # Like SmartAnkle: no tab bar; a segmented selector at the top of the left column
-        # switches the whole body between the modes, and the choice is remembered.
-        self.body = ttk.Frame(root)
-        self.body.pack(fill="both", expand=True)
-        self.live_tab = ttk.Frame(self.body, padding=(24, 14, 24, 4))
-        self.trial_tab = ttk.Frame(self.body, padding=(24, 14, 24, 4))
-        self.mode_frames = {"Live": self.live_tab, "Prova": self.trial_tab}
-        self._build_live()
-        self._build_trial()
-        self.select_mode(self.v["mode"].get())
+        self._build_body()
         self.refresh_sources()
         self.refresh_monitors()
         self._update_device_chips()
+        self._update_trial_buttons()
+        self._update_summaries()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(40, self._poll)
         root.after(1000, self._slow_poll)
@@ -207,7 +232,6 @@ class App:
             "device": tk.StringVar(value=s.get("device", "Automatico")),
             "fp16": tk.BooleanVar(value=s.get("fp16", False)),
             "conf": tk.StringVar(value=s.get("conf", "0.5")),
-            "mode": tk.StringVar(value=s.get("mode", "Live") if s.get("mode") in MODES else "Live"),
             "subject": tk.StringVar(value=s.get("subject", "")),
             "monitor": tk.StringVar(value=s.get("monitor", "")),
             "cal_points": tk.StringVar(value=s.get("cal_points", "13")),
@@ -225,6 +249,7 @@ class App:
             var.trace_add("write", lambda *_: self._schedule_save())
 
     def _schedule_save(self):
+        self._update_summaries()
         if self._save_id is not None:
             self.root.after_cancel(self._save_id)
         self._save_id = self.root.after(500, self._save)
@@ -232,7 +257,7 @@ class App:
     def _save(self):
         self._save_id = None
         s = self.settings
-        for k in ("mode", "source", "resolution", "flip_h", "flip_v", "device", "fp16", "conf", "subject", "monitor",
+        for k in ("source", "resolution", "flip_h", "flip_v", "device", "fp16", "conf", "subject", "monitor",
                   "cal_points", "cal_dwell", "fix_dur", "repeat_blinks", "max_repeats"):
             s[k] = self.v[k].get()
         s["counts"] = {k: self.v[f"n_{k}"].get() for k in TYPE_LABELS}
@@ -290,44 +315,30 @@ class App:
         self.status_label.configure(text=text)
         self.status_dot.itemconfigure(self.status_item, fill=COLORS.get(color, color))
 
-    # ---- modes ----
-    def _mode_selector(self, parent):
-        """MODALITÀ segmented control + description, as SmartAnkle's ESPERIMENTO selector.
-        Each mode's left column has its own copy, bound to the same variable."""
-        ttk.Label(parent, text="MODALITÀ", style="Section.TLabel").pack(anchor="w")
-        segment = ttk.Frame(parent, style="Card.TFrame")
-        segment.pack(fill="x", pady=(6, 4))
-        for column, name in enumerate(MODES):
-            ttk.Radiobutton(segment, text=name, value=name, variable=self.v["mode"], style="Segment.Toolbutton",
-                            command=lambda: self.select_mode(self.v["mode"].get())).grid(
-                row=0, column=column, sticky="nsew", padx=1, pady=1)
-            segment.columnconfigure(column, weight=1, uniform="segment")
-        label = ttk.Label(parent, text="", style="Description.TLabel", wraplength=340)
-        label.pack(anchor="w", pady=(0, 4))
-        self.mode_descriptions = getattr(self, "mode_descriptions", []) + [label]
-
-    def select_mode(self, name):
-        if name not in MODES:
-            name = "Live"
-        if self.v["mode"].get() != name:
-            self.v["mode"].set(name)
-        for mode, frame in self.mode_frames.items():
-            if mode == name:
-                frame.pack(fill="both", expand=True)
-            else:
-                frame.pack_forget()
-        for label in self.mode_descriptions:
-            label.configure(text=MODES[name])
-        if name == "Prova":
-            self._draw_map()
-
     # ---- small builders ----
-    def _section(self, parent, text):
-        ttk.Label(parent, text=text, style="Section.TLabel").pack(anchor="w", pady=(6, 0))
-        card = ttk.Frame(parent, style="Card.TFrame", padding=(14, 6))
-        card.pack(fill="x", pady=(4, 0))
-        card.columnconfigure(1, weight=1)
-        return card
+    def _section(self, parent, key, title):
+        """A closed collapsible card; returns its body to fill."""
+        sec = Collapsible(parent, title)
+        sec.pack(fill="x", pady=(0, 8))
+        self.sections[key] = sec
+        return sec.body
+
+    def _update_summaries(self):
+        """One-line summary of every section, shown in its header while it is closed."""
+        if not getattr(self, "sections", None):
+            return
+        v = self.v
+        src = v["source"].get()
+        if src == FILE_NAME and self.file_path:
+            src = os.path.basename(self.file_path)
+        res = v["resolution"].get()
+        self.sections["source"].set_summary(src + ("" if res == "Predefinita" else f" · {res}"))
+        dev = v["device"].get().split(" · ")[0]
+        self.sections["model"].set_summary(f"{dev} · soglia {v['conf'].get()}" + (" · fp16" if v["fp16"].get() else ""))
+        mon = v["monitor"].get().split("  (")[0].split(": ")[-1]
+        self.sections["participant"].set_summary(f"{v['subject'].get().strip() or 'anonimo'} · {mon}")
+        self.sections["calibration"].set_summary(f"{v['cal_points'].get()} punti · {v['cal_dwell'].get()} s")
+        self.sections["experiment"].set_summary(self.duration_label.cget("text"))
 
     def _row(self, card, r, label, widget):
         ttk.Label(card, text=label, style="Card.TLabel").grid(row=r, column=0, sticky="w", padx=(0, 10), pady=3)
@@ -339,57 +350,94 @@ class App:
         val.grid(row=r, column=1, sticky="e", pady=1)
         return val
 
-    # ---- Live tab ----
-    def _build_live(self):
-        left = ScrollColumn(self.live_tab, width=400)
-        left.pack(side="left", fill="y")
-        left = left.inner
-        self._mode_selector(left)
-        right = ttk.Frame(self.live_tab)
-        right.pack(side="left", fill="both", expand=True, padx=(24, 0))
-        self.view_scale = VIEW_SCALE
-        self.view_holders = []
-        right.bind("<Configure>", self._fit_views)
+    # ---- layout: one screen ----
+    def _build_body(self):
+        body = ttk.Frame(self.root, padding=(24, 14, 24, 4))
+        body.pack(fill="both", expand=True)
 
-        card = self._section(left, "SORGENTE VIDEO")
+        # Left: collapsible settings, all closed at start (scroll if the window is short);
+        # the action buttons stay pinned below them.
+        column = ttk.Frame(body)
+        column.pack(side="left", fill="y")
+        buttons = ttk.Frame(column)
+        buttons.pack(side="bottom", fill="x", pady=(8, 0))
+        scroll = ScrollColumn(column, width=380)
+        scroll.pack(side="top", fill="both", expand=True)
+        left = scroll.inner
+        self.sections = {}
+        ttk.Label(left, text="IMPOSTAZIONI", style="Section.TLabel").pack(anchor="w", pady=(0, 6))
+
+        card = self._section(left, "source", "Sorgente video")
         row = ttk.Frame(card, style="Inner.TFrame")
-        self.source_box = ttk.Combobox(row, textvariable=self.v["source"], state="readonly", width=30)
+        self.source_box = ttk.Combobox(row, textvariable=self.v["source"], state="readonly", width=28)
         self.source_box.pack(side="left", fill="x", expand=True)
         self.source_box.bind("<<ComboboxSelected>>", self._on_source_selected)
         ttk.Button(row, text="↻", width=3, style="Ghost.TButton", command=self.refresh_sources).pack(
             side="left", padx=(6, 0))
-        ttk.Label(card, text="Ingresso", style="Card.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 6))
-        self._row(card, 2, "Risoluzione", ttk.Combobox(card, textvariable=self.v["resolution"], state="readonly",
+        self._row(card, 0, "Ingresso", row)
+        self._row(card, 1, "Risoluzione", ttk.Combobox(card, textvariable=self.v["resolution"], state="readonly",
                                                        values=list(RESOLUTIONS), width=14))
         ttk.Checkbutton(card, text="Specchia orizzontalmente", variable=self.v["flip_h"],
-                        style="Card.TCheckbutton", command=self._apply_flip).grid(row=3, column=0, columnspan=2,
+                        style="Card.TCheckbutton", command=self._apply_flip).grid(row=2, column=0, columnspan=2,
                                                                                   sticky="w")
         ttk.Checkbutton(card, text="Capovolgi verticalmente", variable=self.v["flip_v"],
-                        style="Card.TCheckbutton", command=self._apply_flip).grid(row=4, column=0, columnspan=2,
+                        style="Card.TCheckbutton", command=self._apply_flip).grid(row=3, column=0, columnspan=2,
                                                                                   sticky="w")
-        self.file_label = ttk.Label(card, text="", style="Summary.TLabel", wraplength=290)
-        self.file_label.grid(row=5, column=0, columnspan=2, sticky="w")
+        self.file_label = ttk.Label(card, text="", style="Summary.TLabel", wraplength=320)
+        self.file_label.grid(row=4, column=0, columnspan=2, sticky="w")
 
-        card = self._section(left, "MODELLO")
+        card = self._section(left, "model", "Modello")
         self.device_box = ttk.Combobox(card, textvariable=self.v["device"], state="readonly", width=24)
         self._row(card, 0, "Dispositivo", self.device_box)
         ttk.Checkbutton(card, text="Mezza precisione fp16 (solo GPU)", variable=self.v["fp16"],
                         style="Card.TCheckbutton").grid(row=1, column=0, columnspan=2, sticky="w")
         self._row(card, 2, "Soglia confidenza", ttk.Spinbox(card, from_=0.1, to=0.95, increment=0.05,
                                                             textvariable=self.v["conf"], width=6))
-        self.device_hint = ttk.Label(card, text="", style="Summary.TLabel", wraplength=290)
+        self.device_hint = ttk.Label(card, text="", style="Summary.TLabel", wraplength=320)
         self.device_hint.grid(row=3, column=0, columnspan=2, sticky="w")
 
-        buttons = ttk.Frame(left)
-        buttons.pack(fill="x", pady=(10, 0))
-        self.start_btn = ttk.Button(buttons, text="▶  Avvia", style="Accent.TButton", command=self.start_tracking)
-        self.start_btn.pack(side="left", fill="x", expand=True)
-        self.stop_btn = ttk.Button(buttons, text="■  Ferma", style="Danger.TButton", command=self.stop_tracking,
-                                   state="disabled")
-        self.stop_btn.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        card = self._section(left, "participant", "Partecipante e schermo")
+        self._row(card, 0, "Codice soggetto", ttk.Entry(card, textvariable=self.v["subject"], width=16))
+        row = ttk.Frame(card, style="Inner.TFrame")
+        self.monitor_box = ttk.Combobox(row, textvariable=self.v["monitor"], state="readonly", width=20)
+        self.monitor_box.pack(side="left", fill="x", expand=True)
+        self.monitor_box.bind("<<ComboboxSelected>>", lambda e: self._draw_map())
+        ttk.Button(row, text="↻", width=3, style="Ghost.TButton", command=self.refresh_monitors).pack(
+            side="left", padx=(6, 0))
+        self._row(card, 1, "Schermo", row)
 
-        card = self._section(left, "STATO")
+        card = self._section(left, "calibration", "Calibrazione")
+        self._row(card, 0, "Punti", ttk.Combobox(card, textvariable=self.v["cal_points"], values=CAL_POINTS,
+                                                 state="readonly", width=6))
+        self._row(card, 1, "Durata per punto (s)", ttk.Spinbox(card, from_=0.8, to=4.0, increment=0.1,
+                                                              textvariable=self.v["cal_dwell"], width=6))
+
+        card = self._section(left, "experiment", "Esperimento")
+        types = ttk.Frame(card, style="Inner.TFrame")
+        types.grid(row=0, column=0, columnspan=2, sticky="ew")
+        for i, (k, label) in enumerate(TYPE_LABELS.items()):   # two columns of three
+            r, c = i % 3, 2 * (i // 3)
+            ttk.Checkbutton(types, text=label, variable=self.v[f"on_{k}"], style="Card.TCheckbutton").grid(
+                row=r, column=c, sticky="w", padx=(0 if c == 0 else 12, 4))
+            ttk.Spinbox(types, from_=1, to=60, textvariable=self.v[f"n_{k}"], width=3).grid(
+                row=r, column=c + 1, sticky="e", pady=2)
+        types.columnconfigure(1, weight=1)
+        self._row(card, 1, "Durata fissazione (s)",
+                  ttk.Spinbox(card, from_=0.8, to=4.0, increment=0.1, textvariable=self.v["fix_dur"], width=5))
+        blink_row = ttk.Frame(card, style="Inner.TFrame")
+        ttk.Checkbutton(blink_row, text="Ripeti persi per ammiccamento, max", variable=self.v["repeat_blinks"],
+                        style="Card.TCheckbutton").pack(side="left")
+        ttk.Spinbox(blink_row, from_=1, to=3, textvariable=self.v["max_repeats"], width=3).pack(side="right")
+        blink_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        self.duration_label = ttk.Label(card, text="", style="Summary.TLabel")
+        self.duration_label.grid(row=3, column=0, columnspan=2, sticky="w")
+        for k in TYPE_LABELS:
+            for p in ("n_", "on_"):
+                self.v[p + k].trace_add("write", lambda *_: self._update_duration())
+        self.v["fix_dur"].trace_add("write", lambda *_: self._update_duration())
+        self._update_duration()
+
+        card = self._section(left, "status", "Stato")
         self.stat = {}
         for r, (key, label) in enumerate((("cam_fps", "Video (fps)"), ("model_fps", "Modello (fps)"),
                                           ("theta", "θ orizzontale / verticale"),
@@ -399,15 +447,41 @@ class App:
             self.stat[key] = self._value(card, r, label)
         ttk.Button(card, text="Reimposta centro occhio", style="Ghost.TButton",
                    command=self.reset_center).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.sections["status"].set_summary("fermo")
 
-        # Right column: images and gaze trace.
-        views = ttk.Frame(right)
-        views.pack(fill="x", anchor="n")
+        # Pinned actions, in the order they are used.
+        row = ttk.Frame(buttons)
+        row.pack(fill="x")
+        self.start_btn = ttk.Button(row, text="▶  Avvia", style="Accent.TButton", command=self.start_tracking)
+        self.start_btn.pack(side="left", fill="x", expand=True)
+        self.stop_btn = ttk.Button(row, text="■  Ferma", style="Danger.TButton", command=self.stop_tracking,
+                                   state="disabled")
+        self.stop_btn.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        self.cal_btn = ttk.Button(buttons, text="1 · Calibrazione", style="Primary.TButton", command=self.run_calibration)
+        self.cal_btn.pack(fill="x", pady=(8, 0))
+        self.exp_btn = ttk.Button(buttons, text="2 · Esperimento", style="Accent.TButton", command=self.run_experiment)
+        self.exp_btn.pack(fill="x", pady=(8, 0))
+        ttk.Button(buttons, text="Apri cartella risultati", style="Ghost.TButton",
+                   command=self.open_results).pack(fill="x", pady=(8, 0))
+
+        # Right: everything visible at once.
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True, padx=(24, 0))
+        self.view_scale = VIEW_SCALE
+        self.view_holders = []
+        self.map_box = (int(240 * VIEW_SCALE * 16 / 9), int(240 * VIEW_SCALE))
+        right.bind("<Configure>", self._fit_right)
+        self.trial_info = ttk.Label(right, text="", style="Description.TLabel", wraplength=1300, justify="left")
+        self.trial_info.pack(anchor="w")
+
+        # Row 1: camera, segmentation, participant screen.
+        top = ttk.Frame(right)
+        top.pack(fill="x", pady=(4, 0))
         self.view_labels = {}
-        for key, title in (("camera", "CAMERA  ·  ellissi rilevate"), ("seg", "SEGMENTAZIONE  ·  pupilla / iride / occhio")):
-            col = ttk.Frame(views)
-            col.pack(side="left", padx=(0, 16))
-            ttk.Label(col, text=title, style="Section.TLabel").pack(anchor="w", pady=(10, 4))
+        for key, title in (("camera", "CAMERA  ·  ellissi rilevate"), ("seg", "SEGMENTAZIONE")):
+            col = ttk.Frame(top)
+            col.pack(side="left", padx=(0, 16), anchor="n")
+            ttk.Label(col, text=title, style="Section.TLabel").pack(anchor="w", pady=(0, 4))
             holder = tk.Frame(col, background=COLORS["log_bg"], width=int(320 * VIEW_SCALE),
                               height=int(240 * VIEW_SCALE))
             holder.pack()
@@ -417,15 +491,79 @@ class App:
                            text="Nessun video\nscegliere un ingresso e premere Avvia", font=(FONT_FAMILY, FONT_SIZE - 1))
             lab.pack(fill="both", expand=True)
             self.view_labels[key] = lab
-        legend = ttk.Label(right, style="Description.TLabel",
-                           text="Bianco: pupilla rilevata  ·  Giallo: pupilla corretta per la rifrazione  ·  "
-                                "Ciano: iride  ·  Segmentazione: blu pupilla, rosso iride, verde occhio aperto")
-        legend.pack(anchor="w", pady=(6, 0))
-        ttk.Label(right, text=f"SGUARDO  ·  ultimi {TRACE_SECONDS:.0f} s  (blu: θ orizzontale, arancio: θ verticale, grigio: occhio chiuso)",
-                  style="Section.TLabel").pack(anchor="w", pady=(14, 4))
-        self.trace_canvas = tk.Canvas(right, height=170, background=COLORS["card"], highlightthickness=1,
-                                      highlightbackground=COLORS["border"])
-        self.trace_canvas.pack(fill="x")
+        map_col = ttk.Frame(top)
+        map_col.pack(side="left", anchor="n")
+        ttk.Label(map_col, text="SCHERMO  ·  bersagli (●), sguardo (×), sguardo live (rosso)",
+                  style="Section.TLabel").pack(anchor="w", pady=(0, 4))
+        self.map_canvas = tk.Canvas(map_col, width=self.map_box[0], height=self.map_box[1], background="#9ca3af",
+                                    highlightthickness=1, highlightbackground=COLORS["border"])
+        self.map_canvas.pack(anchor="w")
+        self.map_legend = tk.Frame(map_col, background=COLORS["bg"])
+        self.map_legend.pack(anchor="w", pady=(2, 0))
+        for i, (k, label) in enumerate(TYPE_LABELS.items()):
+            cell = tk.Frame(self.map_legend, background=COLORS["bg"])
+            cell.grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 10))
+            tk.Label(cell, text="●", foreground=TYPE_COLORS[k], background=COLORS["bg"],
+                     font=(FONT_FAMILY, FONT_SIZE - 3)).pack(side="left")
+            tk.Label(cell, text=label, foreground=COLORS["muted"], background=COLORS["bg"],
+                     font=(FONT_FAMILY, FONT_SIZE - 4)).pack(side="left")
+        for col in self.view_holders:
+            ttk.Label(col.master, style="Description.TLabel", wraplength=int(320 * VIEW_SCALE),
+                      text=("Bianco: pupilla rilevata · Giallo: corretta · Ciano: iride" if col is self.view_holders[0]
+                            else "Blu: pupilla · Rosso: iride · Verde: occhio aperto")).pack(anchor="w", pady=(2, 0))
+
+        # Row 2: gaze trace and calibration quality.
+        mid = ttk.Frame(right)
+        mid.pack(fill="x", pady=(10, 0))
+        cal_col = ttk.Frame(mid)
+        cal_col.pack(side="right", fill="y", padx=(16, 0))
+        trace_col = ttk.Frame(mid)
+        trace_col.pack(side="left", fill="both", expand=True)
+        ttk.Label(trace_col, text=f"SGUARDO  ·  {TRACE_SECONDS:.0f} s  (blu: θ orizz., arancio: θ vert., "
+                                  "grigio: occhio chiuso)", style="Section.TLabel").pack(anchor="w", pady=(0, 4))
+        self.trace_canvas = tk.Canvas(trace_col, width=200, height=130, background=COLORS["card"],
+                                      highlightthickness=1, highlightbackground=COLORS["border"])
+        self.trace_canvas.pack(fill="both", expand=True)
+        ttk.Label(cal_col, text="CALIBRAZIONE", style="Section.TLabel").pack(anchor="w", pady=(0, 4))
+        card = ttk.Frame(cal_col, style="Card.TFrame", padding=(14, 8))
+        card.pack(fill="both", expand=True)
+        self.cal_stat = {}
+        items = (("stato", "Stato"), ("punti", "Punti usati"), ("ordine", "Modello"), ("blinks", "Ammicc. / ripetuti"),
+                 ("res", "Residuo medio"), ("loo", "Leave-one-out"), ("max", "Residuo massimo"))
+        for i, (key, label) in enumerate(items):
+            r, c = i % 4, 2 * (i // 4)
+            ttk.Label(card, text=label, style="Card.TLabel").grid(row=r, column=c, sticky="w",
+                                                                  padx=(0 if c == 0 else 24, 10), pady=1)
+            val = ttk.Label(card, text="—", style="Value.TLabel")
+            val.grid(row=r, column=c + 1, sticky="e", pady=1)
+            self.cal_stat[key] = val
+
+        # Row 3: experiment errors.
+        ttk.Label(right, text="ERRORE DELL'ESPERIMENTO  (mediana per prova, px)", style="Section.TLabel").pack(
+            anchor="w", pady=(10, 4))
+        self.result_nb = ttk.Notebook(right)
+        self.result_nb.pack(fill="both", expand=True)
+        cols = [("categoria", "Categoria", 150), ("n_prove", "Prove", 60), ("n_prove_valide", "Valide", 60),
+                ("errore_mediano_px", "Mediana", 80), ("errore_medio_px", "Media", 70), ("ds_px", "DS", 60),
+                ("iqr", "Q1–Q3", 100), ("precisione_rms_px", "Precisione RMS", 110),
+                ("campioni_validi_pct", "Validi", 70), ("persi_blink_pct", "Persi blink", 85),
+                ("ammiccamenti", "Ammicc.", 70), ("prove_ripetute", "Ripetute", 70)]
+        self.tables = {}
+        for key, title in (("tipo", "Per tipo di bersaglio"), ("regione", "Per regione dello schermo"),
+                           ("eccentricita", "Per eccentricità")):
+            frame = ttk.Frame(self.result_nb)
+            tree = ttk.Treeview(frame, columns=[c[0] for c in cols], show="headings", height=6)
+            for cid, head, width in cols:
+                tree.heading(cid, text=head)
+                tree.column(cid, width=width, anchor="w" if cid == "categoria" else "e", stretch=cid == "categoria")
+            tree.tag_configure("total", font=(FONT_FAMILY, FONT_SIZE, "bold"))
+            bar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+            tree.configure(yscrollcommand=bar.set)
+            bar.pack(side="right", fill="y")
+            tree.pack(side="left", fill="both", expand=True)
+            self.result_nb.add(frame, text=title)
+            self.tables[key] = tree
+        self.trials_df = None
 
     def refresh_sources(self):
         self.cameras = list_cameras()
@@ -560,6 +698,7 @@ class App:
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self.set_chip("camera", "unknown", "fermo")
+        self.sections["status"].set_summary("fermo")
         self.set_status("Pronto", "ready")
         self._update_trial_buttons()
 
@@ -619,6 +758,8 @@ class App:
             if g is not None:
                 state, n = g.center_state()
                 self.stat["center"].configure(text=f"{state}" + (f" ({n})" if n else ""))
+                if tr is not None:
+                    self.sections["status"].set_summary(f"{tr.model_fps:.0f} fps · centro {state}")
                 color = {"bloccato": "accent", "stimato": "ready", "provvisorio": "warning"}.get(state, "unknown")
                 self.set_chip("center", color, {"bloccato": "bloccato per la prova", "stimato": f"stimato · {n} clip",
                                                 "provvisorio": "provvisorio", "assente": "guardare in giro"}[state])
@@ -681,126 +822,6 @@ class App:
             if len(pts) >= 4:
                 c.create_line(*pts, fill=color, width=2)
 
-    # ---- Prova tab ----
-    def _build_trial(self):
-        # Left column: settings scroll if the window is short; the action buttons stay pinned below.
-        column = ttk.Frame(self.trial_tab)
-        column.pack(side="left", fill="y")
-        buttons = ttk.Frame(column)
-        buttons.pack(side="bottom", fill="x", pady=(8, 0))
-        left = ScrollColumn(column, width=380)
-        left.pack(side="top", fill="both", expand=True)
-        left = left.inner
-        self._mode_selector(left)
-        right = ttk.Frame(self.trial_tab)
-        right.pack(side="left", fill="both", expand=True, padx=(24, 0))
-        self.map_box = (560, 315)
-        right.bind("<Configure>", self._fit_map)
-
-        card = self._section(left, "PARTECIPANTE E SCHERMO")
-        self._row(card, 0, "Codice soggetto", ttk.Entry(card, textvariable=self.v["subject"], width=16))
-        row = ttk.Frame(card, style="Inner.TFrame")
-        self.monitor_box = ttk.Combobox(row, textvariable=self.v["monitor"], state="readonly", width=20)
-        self.monitor_box.pack(side="left", fill="x", expand=True)
-        self.monitor_box.bind("<<ComboboxSelected>>", lambda e: self._draw_map())
-        ttk.Button(row, text="↻", width=3, style="Ghost.TButton", command=self.refresh_monitors).pack(
-            side="left", padx=(6, 0))
-        self._row(card, 1, "Schermo", row)
-
-        card = self._section(left, "CALIBRAZIONE")
-        self._row(card, 0, "Punti", ttk.Combobox(card, textvariable=self.v["cal_points"], values=CAL_POINTS,
-                                                 state="readonly", width=6))
-        self._row(card, 1, "Durata per punto (s)", ttk.Spinbox(card, from_=0.8, to=4.0, increment=0.1,
-                                                              textvariable=self.v["cal_dwell"], width=6))
-
-        card = self._section(left, "ESPERIMENTO  ·  prove per tipo")
-        types = ttk.Frame(card, style="Inner.TFrame")
-        types.grid(row=0, column=0, columnspan=2, sticky="ew")
-        for i, (k, label) in enumerate(TYPE_LABELS.items()):   # two columns of three
-            r, c = i % 3, 2 * (i // 3)
-            ttk.Checkbutton(types, text=label, variable=self.v[f"on_{k}"], style="Card.TCheckbutton").grid(
-                row=r, column=c, sticky="w", padx=(0 if c == 0 else 12, 4))
-            ttk.Spinbox(types, from_=1, to=60, textvariable=self.v[f"n_{k}"], width=3).grid(
-                row=r, column=c + 1, sticky="e", pady=2)
-        types.columnconfigure(1, weight=1)
-        self._row(card, 1, "Durata fissazione (s)",
-                  ttk.Spinbox(card, from_=0.8, to=4.0, increment=0.1, textvariable=self.v["fix_dur"], width=5))
-        blink_row = ttk.Frame(card, style="Inner.TFrame")
-        ttk.Checkbutton(blink_row, text="Ripeti persi per ammiccamento, max", variable=self.v["repeat_blinks"],
-                        style="Card.TCheckbutton").pack(side="left")
-        ttk.Spinbox(blink_row, from_=1, to=3, textvariable=self.v["max_repeats"], width=3).pack(side="right")
-        blink_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0))
-        self.duration_label = ttk.Label(card, text="", style="Summary.TLabel")
-        self.duration_label.grid(row=3, column=0, columnspan=2, sticky="w")
-        for k in TYPE_LABELS:
-            for p in ("n_", "on_"):
-                self.v[p + k].trace_add("write", lambda *_: self._update_duration())
-        self.v["fix_dur"].trace_add("write", lambda *_: self._update_duration())
-        self._update_duration()
-
-        self.cal_btn = ttk.Button(buttons, text="1 · Calibrazione", style="Primary.TButton", command=self.run_calibration)
-        self.cal_btn.pack(fill="x")
-        self.exp_btn = ttk.Button(buttons, text="2 · Esperimento", style="Accent.TButton", command=self.run_experiment)
-        self.exp_btn.pack(fill="x", pady=(8, 0))
-        ttk.Button(buttons, text="Apri cartella risultati", style="Ghost.TButton",
-                   command=self.open_results).pack(fill="x", pady=(8, 0))
-
-        # Right: info, screen map, result tables.
-        self.trial_info = ttk.Label(right, text="", style="Description.TLabel", wraplength=900, justify="left")
-        self.trial_info.pack(anchor="w", pady=(10, 0))
-        top = ttk.Frame(right)
-        top.pack(fill="both", expand=True)
-        map_col = ttk.Frame(top)
-        map_col.pack(side="left", anchor="n")
-        ttk.Label(map_col, text="SCHERMO  ·  bersagli (●) e sguardo stimato (×)", style="Section.TLabel").pack(
-            anchor="w", pady=(10, 4))
-        self.map_canvas = tk.Canvas(map_col, width=560, height=315, background="#9ca3af", highlightthickness=1,
-                                    highlightbackground=COLORS["border"])
-        self.map_canvas.pack()
-        self.map_legend = tk.Frame(map_col, background=COLORS["bg"])
-        self.map_legend.pack(anchor="w", pady=(4, 0))
-        for k, label in TYPE_LABELS.items():
-            tk.Label(self.map_legend, text="●", foreground=TYPE_COLORS[k], background=COLORS["bg"],
-                     font=(FONT_FAMILY, FONT_SIZE - 2)).pack(side="left")
-            tk.Label(self.map_legend, text=label + "  ", foreground=COLORS["muted"], background=COLORS["bg"],
-                     font=(FONT_FAMILY, FONT_SIZE - 4)).pack(side="left")
-
-        cal_col = ttk.Frame(top)
-        cal_col.pack(side="left", fill="both", expand=True, padx=(20, 0), anchor="n")
-        ttk.Label(cal_col, text="CALIBRAZIONE", style="Section.TLabel").pack(anchor="w", pady=(10, 4))
-        card = ttk.Frame(cal_col, style="Card.TFrame", padding=(16, 10))
-        card.pack(fill="x")
-        card.columnconfigure(1, weight=1)
-        self.cal_stat = {}
-        for r, (key, label) in enumerate((("stato", "Stato"), ("punti", "Punti usati"), ("ordine", "Modello"),
-                                          ("res", "Residuo medio"), ("loo", "Errore leave-one-out"),
-                                          ("max", "Residuo massimo"), ("blinks", "Ammiccamenti / ripetuti"))):
-            self.cal_stat[key] = self._value(card, r, label)
-
-        ttk.Label(right, text="ERRORE DELL'ESPERIMENTO  (mediana per prova, px)", style="Section.TLabel").pack(
-            anchor="w", pady=(14, 4))
-        self.result_nb = ttk.Notebook(right)
-        self.result_nb.pack(fill="both", expand=True)
-        cols = [("categoria", "Categoria", 150), ("n_prove", "Prove", 60), ("n_prove_valide", "Valide", 60),
-                ("errore_mediano_px", "Mediana", 80), ("errore_medio_px", "Media", 70), ("ds_px", "DS", 60),
-                ("iqr", "Q1–Q3", 100), ("precisione_rms_px", "Precisione RMS", 110),
-                ("campioni_validi_pct", "Validi", 70), ("persi_blink_pct", "Persi blink", 85),
-                ("ammiccamenti", "Ammicc.", 70), ("prove_ripetute", "Ripetute", 70)]
-        self.tables = {}
-        for key, title in (("tipo", "Per tipo di bersaglio"), ("regione", "Per regione dello schermo"),
-                           ("eccentricita", "Per eccentricità")):
-            frame = ttk.Frame(self.result_nb)
-            tree = ttk.Treeview(frame, columns=[c[0] for c in cols], show="headings", height=7)
-            for cid, head, width in cols:
-                tree.heading(cid, text=head)
-                tree.column(cid, width=width, anchor="w" if cid == "categoria" else "e", stretch=cid == "categoria")
-            tree.tag_configure("total", font=(FONT_FAMILY, FONT_SIZE, "bold"))
-            tree.pack(fill="both", expand=True)
-            self.result_nb.add(frame, text=title)
-            self.tables[key] = tree
-        self.trials_df = None
-        self._update_trial_buttons()
-
     def refresh_monitors(self):
         self.monitors = list_monitors(self.root)
         labels = [m[0] for m in self.monitors]
@@ -836,6 +857,7 @@ class App:
         seconds = ((c["punto_piccolo"] + c["punto_grande"] + c["lettera"] + c["immagine"]) * (fix + 0.15)
                    + c["saccade"] * 2.35 + c["inseguimento"] * 6.95)
         self.duration_label.configure(text=f"{sum(c.values())} prove  ·  circa {seconds / 60:.1f} min")
+        self._update_summaries()
 
     def _update_trial_buttons(self):
         running = self.tracker is not None and self.tracker.running
@@ -843,7 +865,7 @@ class App:
         self.cal_btn.configure(state="normal" if running and not busy else "disabled")
         self.exp_btn.configure(state="normal" if running and not busy and self.mapper is not None else "disabled")
         if not running:
-            self.trial_info.configure(text="Avviare prima la sorgente video nella scheda Live.")
+            self.trial_info.configure(text="Scegliere la sorgente video e premere ▶ Avvia.")
         elif self.mapper is None:
             self.trial_info.configure(text="Pronto per la calibrazione. Il partecipante deve tenere la testa ferma; "
                                            "il centro dell'occhio viene bloccato all'inizio della calibrazione.")
@@ -1049,18 +1071,21 @@ class App:
             subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
 
     # ---- screen map ----
-    def _fit_views(self, event):
-        """Largest scale (up to VIEW_SCALE) at which both views and the trace fit."""
-        scale = min(VIEW_SCALE, (event.width - 16) / 640.0, (event.height - 300) / 240.0)
-        scale = max(0.6, round(scale, 2))
+    def _fit_right(self, event):
+        """Largest scale (up to VIEW_SCALE) at which camera, segmentation and screen map
+        fit side by side and the trace, calibration and tables still fit below."""
+        mon = self.monitor() if self.monitors else (0, 0, 16, 9)
+        aspect = mon[2] / mon[3]
+        scale = min(VIEW_SCALE, (event.width - 40) / (640 + 240 * aspect), (event.height - 540) / 240.0)
+        scale = max(0.55, round(scale, 2))
         if abs(scale - self.view_scale) > 0.01:
             self.view_scale = scale
             for holder in self.view_holders:
                 holder.configure(width=int(320 * scale), height=int(240 * scale))
-
-    def _fit_map(self, event):
-        """Map size from the space left by the calibration card and the result tables."""
-        box = (max(260, min(560, event.width - 380)), max(140, min(315, event.height - 420)))
+                for child in holder.master.winfo_children():
+                    if isinstance(child, ttk.Label) and str(child.cget("style")) == "Description.TLabel":
+                        child.configure(wraplength=int(320 * scale))
+        box = (int(240 * scale * aspect), int(240 * scale))
         if box != self.map_box:
             self.map_box = box
             self._draw_map()
