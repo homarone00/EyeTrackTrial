@@ -26,6 +26,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import cv2
 import numpy as np
+import pandas as pd
 from PIL import Image, ImageTk
 
 from theme import COLORS, FONT_FAMILY, FONT_SIZE, apply_theme
@@ -90,28 +91,37 @@ class ScrollColumn(ttk.Frame):
     """Fixed-width column that gets a vertical scrollbar only when its content is
     taller than the window (small screens, display scaling)."""
 
+    BAR_SPACE = 20   # px always reserved for the scrollbar, so the column never changes width
+
     def __init__(self, parent, width):
         super().__init__(parent)
-        self.canvas = tk.Canvas(self, width=width, highlightthickness=0, background=COLORS["bg"])
-        self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=self.bar.set)
+        self.width = int(width)
+        self.canvas = tk.Canvas(self, width=self.width, highlightthickness=0, background=COLORS["bg"])
         self.canvas.pack(side="left", fill="y", expand=True)
+        slot = ttk.Frame(self, width=self.BAR_SPACE)
+        slot.pack(side="left", fill="y")
+        slot.pack_propagate(False)
+        self.bar = ttk.Scrollbar(slot, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.bar.set)
         self.inner = ttk.Frame(self.canvas)
-        self._win = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self._win = self.canvas.create_window(0, 0, window=self.inner, anchor="nw", width=self.width)
         self.inner.bind("<Configure>", self._update)
         self.canvas.bind("<Configure>", self._update)
         self.canvas.bind_all("<MouseWheel>", self._wheel, add="+")
         self._shown = False
 
+    def set_width(self, width):
+        """Fix the column width (content is laid out to it; opening a section never widens it)."""
+        self.width = int(width)
+        self.canvas.configure(width=self.width)
+        self.canvas.itemconfigure(self._win, width=self.width)
+        self._update()
+
     def _update(self, _=None):
-        need_w = self.inner.winfo_reqwidth()
-        if int(self.canvas.cget("width")) != need_w:
-            self.canvas.configure(width=need_w)
-        self.canvas.itemconfigure(self._win, width=need_w)
-        self.canvas.configure(scrollregion=(0, 0, need_w, self.inner.winfo_reqheight()))
+        self.canvas.configure(scrollregion=(0, 0, self.width, self.inner.winfo_reqheight()))
         overflow = self.inner.winfo_reqheight() > self.canvas.winfo_height() + 1
         if overflow and not self._shown:
-            self.bar.pack(side="left", fill="y", padx=(4, 0))
+            self.bar.pack(side="right", fill="y")
         elif not overflow and self._shown:
             self.bar.pack_forget()
             self.canvas.yview_moveto(0)
@@ -164,6 +174,7 @@ class Collapsible(ttk.Frame):
 class App:
     def __init__(self, root):
         self.root = root
+        self.ui = max(1.0, root.winfo_fpixels("1i") / 96.0)   # Windows display scaling (1.25 at 125 %)
         root.title("EyeTrackTrial - VOGeo-Gaze")
         apply_theme(root)
         self.settings = load_settings()
@@ -369,7 +380,7 @@ class App:
 
         card = self._section(left, "source", "Sorgente video")
         row = ttk.Frame(card, style="Inner.TFrame")
-        self.source_box = ttk.Combobox(row, textvariable=self.v["source"], state="readonly", width=28)
+        self.source_box = ttk.Combobox(row, textvariable=self.v["source"], state="readonly", width=18)
         self.source_box.pack(side="left", fill="x", expand=True)
         self.source_box.bind("<<ComboboxSelected>>", self._on_source_selected)
         ttk.Button(row, text="↻", width=3, style="Ghost.TButton", command=self.refresh_sources).pack(
@@ -387,7 +398,7 @@ class App:
         self.file_label.grid(row=4, column=0, columnspan=2, sticky="w")
 
         card = self._section(left, "model", "Modello")
-        self.device_box = ttk.Combobox(card, textvariable=self.v["device"], state="readonly", width=24)
+        self.device_box = ttk.Combobox(card, textvariable=self.v["device"], state="readonly", width=18)
         self._row(card, 0, "Dispositivo", self.device_box)
         ttk.Checkbutton(card, text="Mezza precisione fp16 (solo GPU)", variable=self.v["fp16"],
                         style="Card.TCheckbutton").grid(row=1, column=0, columnspan=2, sticky="w")
@@ -399,7 +410,7 @@ class App:
         card = self._section(left, "participant", "Partecipante e schermo")
         self._row(card, 0, "Codice soggetto", ttk.Entry(card, textvariable=self.v["subject"], width=16))
         row = ttk.Frame(card, style="Inner.TFrame")
-        self.monitor_box = ttk.Combobox(row, textvariable=self.v["monitor"], state="readonly", width=20)
+        self.monitor_box = ttk.Combobox(row, textvariable=self.v["monitor"], state="readonly", width=14)
         self.monitor_box.pack(side="left", fill="x", expand=True)
         self.monitor_box.bind("<<ComboboxSelected>>", lambda e: self._draw_map())
         ttk.Button(row, text="↻", width=3, style="Ghost.TButton", command=self.refresh_monitors).pack(
@@ -418,7 +429,7 @@ class App:
         for i, (k, label) in enumerate(TYPE_LABELS.items()):   # two columns of three
             r, c = i % 3, 2 * (i // 3)
             ttk.Checkbutton(types, text=label, variable=self.v[f"on_{k}"], style="Card.TCheckbutton").grid(
-                row=r, column=c, sticky="w", padx=(0 if c == 0 else 12, 4))
+                row=r, column=c, sticky="w", padx=(0 if c == 0 else 8, 4))
             ttk.Spinbox(types, from_=1, to=60, textvariable=self.v[f"n_{k}"], width=3).grid(
                 row=r, column=c + 1, sticky="e", pady=2)
         types.columnconfigure(1, weight=1)
@@ -448,6 +459,12 @@ class App:
         ttk.Button(card, text="Reimposta centro occhio", style="Ghost.TButton",
                    command=self.reset_center).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.sections["status"].set_summary("fermo")
+
+        # Column width fixed once, to the widest section when open, so opening a section never
+        # widens the column.
+        self.root.update_idletasks()
+        widest = max(max(sec.body.winfo_reqwidth(), sec.winfo_reqwidth()) for sec in self.sections.values())
+        scroll.set_width(max(380, widest + 2))
 
         # Pinned actions, in the order they are used.
         row = ttk.Frame(buttons)
@@ -509,8 +526,8 @@ class App:
                      font=(FONT_FAMILY, FONT_SIZE - 4)).pack(side="left")
         for col in self.view_holders:
             ttk.Label(col.master, style="Description.TLabel", wraplength=int(320 * VIEW_SCALE),
-                      text=("Bianco: pupilla rilevata · Giallo: corretta · Ciano: iride" if col is self.view_holders[0]
-                            else "Blu: pupilla · Rosso: iride · Verde: occhio aperto")).pack(anchor="w", pady=(2, 0))
+                      text=("bianco pupilla · giallo corretta · ciano iride" if col is self.view_holders[0]
+                            else "blu pupilla · rosso iride · verde aperto")).pack(anchor="w", pady=(2, 0))
 
         # Row 2: gaze trace and calibration quality.
         mid = ttk.Frame(right)
@@ -549,13 +566,20 @@ class App:
                 ("campioni_validi_pct", "Validi", 70), ("persi_blink_pct", "Persi blink", 85),
                 ("ammiccamenti", "Ammicc.", 70), ("prove_ripetute", "Ripetute", 70)]
         self.tables = {}
+        # Column widths from the heading text, so they follow the font size and Windows display scaling.
+        import tkinter.font as tkfont
+        head_font = tkfont.Font(family=FONT_FAMILY, size=FONT_SIZE - 2, weight="bold")
+        body_font = tkfont.Font(family=FONT_FAMILY, size=FONT_SIZE, weight="bold")
         for key, title in (("tipo", "Per tipo di bersaglio"), ("regione", "Per regione dello schermo"),
                            ("eccentricita", "Per eccentricità")):
             frame = ttk.Frame(self.result_nb)
             tree = ttk.Treeview(frame, columns=[c[0] for c in cols], show="headings", height=6)
-            for cid, head, width in cols:
+            for cid, head, _ in cols:
                 tree.heading(cid, text=head)
-                tree.column(cid, width=width, anchor="w" if cid == "categoria" else "e", stretch=cid == "categoria")
+                sample = "Centro-sinistra" if cid == "categoria" else "100 %" if cid.endswith("pct") else "999–999"
+                width = max(head_font.measure(head), body_font.measure(sample)) + 18
+                tree.column(cid, width=width, minwidth=width, anchor="w" if cid == "categoria" else "e",
+                            stretch=cid == "categoria")
             tree.tag_configure("total", font=(FONT_FAMILY, FONT_SIZE, "bold"))
             bar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
             tree.configure(yscrollcommand=bar.set)
@@ -1044,7 +1068,8 @@ class App:
             table = summaries.get(key)
             if table is None:
                 continue
-            for _, r in table.iterrows():
+            # Totale first, so it stays visible however short the window is.
+            for _, r in pd.concat([table.tail(1), table.iloc[:-1]]).iterrows():
                 tree.insert("", "end", tags=("total",) if r["categoria"] == "Totale" else (), values=(
                     r["categoria"], r["n_prove"], r["n_prove_valide"], fmt(r["errore_mediano_px"], 0),
                     fmt(r["errore_medio_px"], 0), fmt(r["ds_px"], 0),
@@ -1076,7 +1101,7 @@ class App:
         fit side by side and the trace, calibration and tables still fit below."""
         mon = self.monitor() if self.monitors else (0, 0, 16, 9)
         aspect = mon[2] / mon[3]
-        scale = min(VIEW_SCALE, (event.width - 40) / (640 + 240 * aspect), (event.height - 540) / 240.0)
+        scale = min(VIEW_SCALE, (event.width - 40) / (640 + 240 * aspect), (event.height - 540 * self.ui) / 240.0)
         scale = max(0.55, round(scale, 2))
         if abs(scale - self.view_scale) > 0.01:
             self.view_scale = scale

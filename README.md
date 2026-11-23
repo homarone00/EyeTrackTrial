@@ -5,7 +5,7 @@ Real-time gaze tracking from a close-up eye camera with
 accuracy trial that measures where on the screen the system thinks the participant is looking.
 The GUI follows the SmartAnkle launcher (same theme, Italian labels) and fits on one screen. All settings are in collapsible
 sections on the left (*Sorgente video*, *Modello*, *Partecipante e schermo*, *Calibrazione*, *Esperimento*, *Stato*), closed
-at start, each showing a one-line summary of its values. The action buttons are pinned below them in the order
+at start, each showing a one-line summary of its values; the column keeps the same width when sections open. The action buttons are pinned below them in the order
 they are used: **▶ Avvia** / **■ Ferma**, **1 · Calibrazione**, **2 · Esperimento**, *Apri cartella risultati*. On the right:
 camera, segmentation and participant-screen map, the gaze trace and calibration quality, and the error tables.
 
@@ -48,7 +48,7 @@ installed PyTorch is CPU-only.
 ## Video and model
 
 - **Ingresso**: every camera Windows reports (names via DirectShow), a recorded eye video
-  (*File video...*, played in real time, looping) or *Simulatore occhio (test)*, a synthetic eye
+  (*File video...*, played in real time, looping) or *Simulatore (test)*, a synthetic eye
   that looks at the trial targets, to try the whole program without a camera.
 - **Risoluzione**, mirror / flip: the frame is converted to gray and letterboxed into the
   model's 320×240 canvas, as in the offline tool.

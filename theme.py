@@ -117,7 +117,7 @@ def apply_theme(root):
     button_style("Ghost.TButton", c["card"], c["accent"], c["accent_soft"], border=c["border"])
 
     style.configure("Treeview", background=c["card"], fieldbackground=c["card"], foreground=c["text"],
-                    rowheight=FONT_SIZE * 2, bordercolor=c["border"])
+                    rowheight=tkfont.nametofont("TkDefaultFont").metrics("linespace") + 6, bordercolor=c["border"])
     style.configure("Treeview.Heading", background=c["bg"], foreground=c["muted"], relief="flat",
                     font=(FONT_FAMILY, FONT_SIZE - 2, "bold"))
     style.map("Treeview", background=[("selected", c["accent_soft"])], foreground=[("selected", c["text"])])

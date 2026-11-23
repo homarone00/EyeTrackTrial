@@ -12,7 +12,7 @@ import time
 import cv2
 import numpy as np
 
-SIM_NAME = "Simulatore occhio (test)"
+SIM_NAME = "Simulatore (test)"
 FILE_NAME = "File video..."
 
 
