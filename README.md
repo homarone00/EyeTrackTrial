@@ -148,3 +148,8 @@ targets are measured after the eye has settled, so they show the spatial accurac
 | `analysis.py` | per-trial and per-category errors |
 | `blinks.py` | blink detection, margins, live counter |
 | `theme.py` | SmartAnkle palette and ttk styles |
+
+## License
+
+Apache-2.0 (see [LICENSE](LICENSE)), the same license as VOGeo-Gaze, whose model and weights this
+program uses.
