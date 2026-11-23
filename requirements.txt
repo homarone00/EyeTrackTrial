@@ -1,0 +1,5 @@
+# EyeTrackTrial, on top of the VOGeo-Gaze requirements (../requirements.txt).
+# PyTorch: install the CUDA build for NVIDIA GPUs first (see README.md).
+pillow>=10.0          # live video in the GUI
+screeninfo>=0.8       # monitor list for the participant screen
+pygrabber>=0.2        # camera names on Windows (optional: falls back to "Camera N")
