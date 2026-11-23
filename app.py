@@ -40,8 +40,12 @@ RESOLUTIONS = {"Predefinita": None, "640×480": (640, 480), "1280×720": (1280, 
 CAL_POINTS = ["5", "9", "13", "17", "25"]
 DEFAULT_COUNTS = {"punto_piccolo": 10, "punto_grande": 10, "saccade": 10, "inseguimento": 3,
                   "lettera": 8, "immagine": 8}
-VIEW_SCALE = 1.35         # 320x240 canvas shown at 432x324
+VIEW_SCALE = 1.35         # largest display scale of the 320x240 canvas (432x324); smaller if the window is
 TRACE_SECONDS = 10.0
+MODES = {
+    "Live": "Sorgente video, modello e segmentazione in tempo reale.",
+    "Prova": "Calibrazione e misura dell'errore sullo schermo del partecipante.",
+}
 TYPE_COLORS = {"punto_piccolo": "#2563eb", "punto_grande": "#0ea5e9", "saccade": "#a855f7",
                "inseguimento": "#16a34a", "lettera": "#f59e0b", "immagine": "#ef4444"}
 
@@ -86,6 +90,43 @@ def fmt(v, digits=1, unit=""):
     return "—" if v is None or not np.isfinite(v) else f"{v:.{digits}f}{unit}"
 
 
+class ScrollColumn(ttk.Frame):
+    """Fixed-width column that gets a vertical scrollbar only when its content is
+    taller than the window (small screens, display scaling)."""
+
+    def __init__(self, parent, width):
+        super().__init__(parent)
+        self.canvas = tk.Canvas(self, width=width, highlightthickness=0, background=COLORS["bg"])
+        self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.bar.set)
+        self.canvas.pack(side="left", fill="y", expand=True)
+        self.inner = ttk.Frame(self.canvas)
+        self._win = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", self._update)
+        self.canvas.bind("<Configure>", self._update)
+        self.canvas.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._wheel))
+        self.canvas.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
+        self._shown = False
+
+    def _update(self, _=None):
+        need_w = self.inner.winfo_reqwidth()
+        if int(self.canvas.cget("width")) != need_w:
+            self.canvas.configure(width=need_w)
+        self.canvas.itemconfigure(self._win, width=need_w)
+        self.canvas.configure(scrollregion=(0, 0, need_w, self.inner.winfo_reqheight()))
+        overflow = self.inner.winfo_reqheight() > self.canvas.winfo_height() + 1
+        if overflow and not self._shown:
+            self.bar.pack(side="left", fill="y", padx=(4, 0))
+        elif not overflow and self._shown:
+            self.bar.pack_forget()
+            self.canvas.yview_moveto(0)
+        self._shown = overflow
+
+    def _wheel(self, event):
+        if self._shown:
+            self.canvas.yview_scroll(int(-event.delta / 120), "units")
+
+
 # ---- application --------------------------------------------------------------------
 
 class App:
@@ -94,17 +135,7 @@ class App:
         root.title("EyeTrackTrial - VOGeo-Gaze")
         apply_theme(root)
         self.settings = load_settings()
-        if self.settings.get("_window_size"):
-            try:
-                root.geometry(self.settings["_window_size"])
-            except tk.TclError:
-                pass
-        else:
-            root.geometry("1440x900")
-            try:
-                root.state("zoomed")
-            except tk.TclError:
-                pass
+        self._restore_window()
 
         self.gaze = None              # RealtimeGaze, cached per (device, fp16)
         self.gaze_key = None
@@ -129,20 +160,41 @@ class App:
         self._build_header()
         ttk.Label(root, text="Developed by Omar Carpentiero", style="Footer.TLabel",
                   padding=(24, 0, 24, 4)).pack(side="bottom", anchor="e")
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True)
-        self.live_tab = ttk.Frame(self.notebook, padding=(24, 6, 24, 4))
-        self.trial_tab = ttk.Frame(self.notebook, padding=(24, 6, 24, 4))
-        self.notebook.add(self.live_tab, text="  Live  ")
-        self.notebook.add(self.trial_tab, text="  Prova  ")
+        # Like SmartAnkle: no tab bar; a segmented selector at the top of the left column
+        # switches the whole body between the modes, and the choice is remembered.
+        self.body = ttk.Frame(root)
+        self.body.pack(fill="both", expand=True)
+        self.live_tab = ttk.Frame(self.body, padding=(24, 14, 24, 4))
+        self.trial_tab = ttk.Frame(self.body, padding=(24, 14, 24, 4))
+        self.mode_frames = {"Live": self.live_tab, "Prova": self.trial_tab}
         self._build_live()
         self._build_trial()
+        self.select_mode(self.v["mode"].get())
         self.refresh_sources()
         self.refresh_monitors()
         self._update_device_chips()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(40, self._poll)
         root.after(1000, self._slow_poll)
+
+    def _restore_window(self):
+        """Maximized by default and when it was closed maximized; otherwise the saved
+        size, clamped to the screen and centred, so no part opens off-screen."""
+        root = self.root
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        size = self.settings.get("_window_size")
+        try:
+            w, h = (int(v) for v in size.split("x"))
+        except (AttributeError, ValueError):
+            w, h = 1440, 900
+        w, h = min(w, sw), min(h, sh - 80)          # leave room for the taskbar
+        root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - 80 - h) // 2)}")
+        root.minsize(min(1100, sw), min(650, sh - 80))
+        if self.settings.get("_window_zoomed", True):
+            try:
+                root.state("zoomed")
+            except tk.TclError:
+                pass
 
     # ---- variables / persistence ----
     def _vars(self):
@@ -155,6 +207,7 @@ class App:
             "device": tk.StringVar(value=s.get("device", "Automatico")),
             "fp16": tk.BooleanVar(value=s.get("fp16", False)),
             "conf": tk.StringVar(value=s.get("conf", "0.5")),
+            "mode": tk.StringVar(value=s.get("mode", "Live") if s.get("mode") in MODES else "Live"),
             "subject": tk.StringVar(value=s.get("subject", "")),
             "monitor": tk.StringVar(value=s.get("monitor", "")),
             "cal_points": tk.StringVar(value=s.get("cal_points", "13")),
@@ -179,13 +232,16 @@ class App:
     def _save(self):
         self._save_id = None
         s = self.settings
-        for k in ("source", "resolution", "flip_h", "flip_v", "device", "fp16", "conf", "subject", "monitor",
+        for k in ("mode", "source", "resolution", "flip_h", "flip_v", "device", "fp16", "conf", "subject", "monitor",
                   "cal_points", "cal_dwell", "fix_dur", "repeat_blinks", "max_repeats"):
             s[k] = self.v[k].get()
         s["counts"] = {k: self.v[f"n_{k}"].get() for k in TYPE_LABELS}
         s["enabled"] = {k: self.v[f"on_{k}"].get() for k in TYPE_LABELS}
         s["file_path"] = self.file_path
-        s["_window_size"] = self.root.geometry().split("+")[0]
+        zoomed = self.root.state() == "zoomed"
+        s["_window_zoomed"] = zoomed
+        if not zoomed and self.root.state() == "normal":
+            s["_window_size"] = self.root.geometry().split("+")[0]
         save_settings(s)
 
     # ---- header ----
@@ -234,6 +290,37 @@ class App:
         self.status_label.configure(text=text)
         self.status_dot.itemconfigure(self.status_item, fill=COLORS.get(color, color))
 
+    # ---- modes ----
+    def _mode_selector(self, parent):
+        """MODALITÀ segmented control + description, as SmartAnkle's ESPERIMENTO selector.
+        Each mode's left column has its own copy, bound to the same variable."""
+        ttk.Label(parent, text="MODALITÀ", style="Section.TLabel").pack(anchor="w")
+        segment = ttk.Frame(parent, style="Card.TFrame")
+        segment.pack(fill="x", pady=(6, 4))
+        for column, name in enumerate(MODES):
+            ttk.Radiobutton(segment, text=name, value=name, variable=self.v["mode"], style="Segment.Toolbutton",
+                            command=lambda: self.select_mode(self.v["mode"].get())).grid(
+                row=0, column=column, sticky="nsew", padx=1, pady=1)
+            segment.columnconfigure(column, weight=1, uniform="segment")
+        label = ttk.Label(parent, text="", style="Description.TLabel", wraplength=340)
+        label.pack(anchor="w", pady=(0, 4))
+        self.mode_descriptions = getattr(self, "mode_descriptions", []) + [label]
+
+    def select_mode(self, name):
+        if name not in MODES:
+            name = "Live"
+        if self.v["mode"].get() != name:
+            self.v["mode"].set(name)
+        for mode, frame in self.mode_frames.items():
+            if mode == name:
+                frame.pack(fill="both", expand=True)
+            else:
+                frame.pack_forget()
+        for label in self.mode_descriptions:
+            label.configure(text=MODES[name])
+        if name == "Prova":
+            self._draw_map()
+
     # ---- small builders ----
     def _section(self, parent, text):
         ttk.Label(parent, text=text, style="Section.TLabel").pack(anchor="w", pady=(6, 0))
@@ -254,10 +341,15 @@ class App:
 
     # ---- Live tab ----
     def _build_live(self):
-        left = ttk.Frame(self.live_tab, width=340)
-        left.pack(side="left", fill="y", anchor="n")
+        left = ScrollColumn(self.live_tab, width=400)
+        left.pack(side="left", fill="y")
+        left = left.inner
+        self._mode_selector(left)
         right = ttk.Frame(self.live_tab)
         right.pack(side="left", fill="both", expand=True, padx=(24, 0))
+        self.view_scale = VIEW_SCALE
+        self.view_holders = []
+        right.bind("<Configure>", self._fit_views)
 
         card = self._section(left, "SORGENTE VIDEO")
         row = ttk.Frame(card, style="Inner.TFrame")
@@ -300,8 +392,8 @@ class App:
         card = self._section(left, "STATO")
         self.stat = {}
         for r, (key, label) in enumerate((("cam_fps", "Video (fps)"), ("model_fps", "Modello (fps)"),
-                                          ("theta_h", "θ orizzontale"), ("theta_v", "θ verticale"),
-                                          ("pupil_conf", "Confidenza pupilla"), ("iris_conf", "Confidenza iride"),
+                                          ("theta", "θ orizzontale / verticale"),
+                                          ("conf", "Confidenza pupilla / iride"),
                                           ("open_eye", "Occhio aperto"), ("blinks", "Ammiccamenti"),
                                           ("center", "Centro occhio"))):
             self.stat[key] = self._value(card, r, label)
@@ -320,6 +412,7 @@ class App:
                               height=int(240 * VIEW_SCALE))
             holder.pack()
             holder.pack_propagate(False)
+            self.view_holders.append(holder)
             lab = tk.Label(holder, background=COLORS["log_bg"], foreground=COLORS["log_fg"],
                            text="Nessun video\nscegliere un ingresso e premere Avvia", font=(FONT_FAMILY, FONT_SIZE - 1))
             lab.pack(fill="both", expand=True)
@@ -386,8 +479,7 @@ class App:
             self.set_chip("gpu", "missing" if torch.version.cuda is None else "unknown",
                           "PyTorch solo CPU" if torch.version.cuda is None else "nessuna GPU rilevata")
             self.device_hint.configure(
-                text=f"{build}. Nessuna GPU NVIDIA utilizzabile: il modello gira su CPU. "
-                     "Per la GPU installare PyTorch con CUDA (vedi README).")
+                text=f"{build}: per la GPU installare PyTorch con CUDA (README).")
 
     def _device_arg(self):
         d = self.v["device"].get()
@@ -518,10 +610,8 @@ class App:
             if res is not None:
                 self.stat["cam_fps"].configure(text=fmt(tr.cam_fps, 0))
                 self.stat["model_fps"].configure(text=fmt(tr.model_fps, 0))
-                self.stat["theta_h"].configure(text=fmt(res["theta_h"], 1, "°"))
-                self.stat["theta_v"].configure(text=fmt(res["theta_v"], 1, "°"))
-                self.stat["pupil_conf"].configure(text=fmt(res["pupil_conf"], 2))
-                self.stat["iris_conf"].configure(text=fmt(res["iris_conf"], 2))
+                self.stat["theta"].configure(text=f'{fmt(res["theta_h"], 1, "°")}  /  {fmt(res["theta_v"], 1, "°")}')
+                self.stat["conf"].configure(text=f'{fmt(res["pupil_conf"], 2)}  /  {fmt(res["iris_conf"], 2)}')
                 self.stat["open_eye"].configure(text=fmt(res["open_eye"], 2))
                 bc = self.blink_counter
                 rate = bc.rate_per_min(res["t"])
@@ -537,7 +627,7 @@ class App:
             self.root.after(250, self._slow_poll)
 
     def _show_frame(self, res):
-        s = VIEW_SCALE
+        s = self.view_scale
         w, h = int(320 * s), int(240 * s)
         cam = cv2.cvtColor(cv2.resize(res["gray"], (w, h), interpolation=cv2.INTER_LINEAR), cv2.COLOR_GRAY2RGB)
         draw_el(cam, res["iris_el"], (50, 255, 255), s)
@@ -593,22 +683,29 @@ class App:
 
     # ---- Prova tab ----
     def _build_trial(self):
-        left = ttk.Frame(self.trial_tab, width=360)
-        left.pack(side="left", fill="y", anchor="n")
+        # Left column: settings scroll if the window is short; the action buttons stay pinned below.
+        column = ttk.Frame(self.trial_tab)
+        column.pack(side="left", fill="y")
+        buttons = ttk.Frame(column)
+        buttons.pack(side="bottom", fill="x", pady=(8, 0))
+        left = ScrollColumn(column, width=380)
+        left.pack(side="top", fill="both", expand=True)
+        left = left.inner
+        self._mode_selector(left)
         right = ttk.Frame(self.trial_tab)
         right.pack(side="left", fill="both", expand=True, padx=(24, 0))
+        self.map_box = (560, 315)
+        right.bind("<Configure>", self._fit_map)
 
-        card = self._section(left, "PARTECIPANTE")
+        card = self._section(left, "PARTECIPANTE E SCHERMO")
         self._row(card, 0, "Codice soggetto", ttk.Entry(card, textvariable=self.v["subject"], width=16))
-
-        card = self._section(left, "SCHERMO DEL PARTECIPANTE")
         row = ttk.Frame(card, style="Inner.TFrame")
-        self.monitor_box = ttk.Combobox(row, textvariable=self.v["monitor"], state="readonly", width=26)
+        self.monitor_box = ttk.Combobox(row, textvariable=self.v["monitor"], state="readonly", width=20)
         self.monitor_box.pack(side="left", fill="x", expand=True)
         self.monitor_box.bind("<<ComboboxSelected>>", lambda e: self._draw_map())
         ttk.Button(row, text="↻", width=3, style="Ghost.TButton", command=self.refresh_monitors).pack(
             side="left", padx=(6, 0))
-        row.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self._row(card, 1, "Schermo", row)
 
         card = self._section(left, "CALIBRAZIONE")
         self._row(card, 0, "Punti", ttk.Combobox(card, textvariable=self.v["cal_points"], values=CAL_POINTS,
@@ -617,28 +714,30 @@ class App:
                                                               textvariable=self.v["cal_dwell"], width=6))
 
         card = self._section(left, "ESPERIMENTO  ·  prove per tipo")
-        for r, (k, label) in enumerate(TYPE_LABELS.items()):
-            ttk.Checkbutton(card, text=label, variable=self.v[f"on_{k}"], style="Card.TCheckbutton").grid(
-                row=r, column=0, sticky="w")
-            ttk.Spinbox(card, from_=1, to=60, textvariable=self.v[f"n_{k}"], width=5).grid(
-                row=r, column=1, sticky="e", pady=2)
-        self._row(card, len(TYPE_LABELS), "Durata fissazione (s)",
+        types = ttk.Frame(card, style="Inner.TFrame")
+        types.grid(row=0, column=0, columnspan=2, sticky="ew")
+        for i, (k, label) in enumerate(TYPE_LABELS.items()):   # two columns of three
+            r, c = i % 3, 2 * (i // 3)
+            ttk.Checkbutton(types, text=label, variable=self.v[f"on_{k}"], style="Card.TCheckbutton").grid(
+                row=r, column=c, sticky="w", padx=(0 if c == 0 else 12, 4))
+            ttk.Spinbox(types, from_=1, to=60, textvariable=self.v[f"n_{k}"], width=3).grid(
+                row=r, column=c + 1, sticky="e", pady=2)
+        types.columnconfigure(1, weight=1)
+        self._row(card, 1, "Durata fissazione (s)",
                   ttk.Spinbox(card, from_=0.8, to=4.0, increment=0.1, textvariable=self.v["fix_dur"], width=5))
+        blink_row = ttk.Frame(card, style="Inner.TFrame")
+        ttk.Checkbutton(blink_row, text="Ripeti persi per ammiccamento, max", variable=self.v["repeat_blinks"],
+                        style="Card.TCheckbutton").pack(side="left")
+        ttk.Spinbox(blink_row, from_=1, to=3, textvariable=self.v["max_repeats"], width=3).pack(side="right")
+        blink_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0))
         self.duration_label = ttk.Label(card, text="", style="Summary.TLabel")
-        self.duration_label.grid(row=len(TYPE_LABELS) + 1, column=0, columnspan=2, sticky="w")
+        self.duration_label.grid(row=3, column=0, columnspan=2, sticky="w")
         for k in TYPE_LABELS:
             for p in ("n_", "on_"):
                 self.v[p + k].trace_add("write", lambda *_: self._update_duration())
         self.v["fix_dur"].trace_add("write", lambda *_: self._update_duration())
         self._update_duration()
 
-        card = self._section(left, "AMMICCAMENTI")
-        ttk.Checkbutton(card, text="Ripeti punti e prove persi", variable=self.v["repeat_blinks"],
-                        style="Card.TCheckbutton").grid(row=0, column=0, sticky="w")
-        ttk.Spinbox(card, from_=1, to=3, textvariable=self.v["max_repeats"], width=4).grid(row=0, column=1, sticky="e")
-
-        buttons = ttk.Frame(left)
-        buttons.pack(fill="x", pady=(10, 0))
         self.cal_btn = ttk.Button(buttons, text="1 · Calibrazione", style="Primary.TButton", command=self.run_calibration)
         self.cal_btn.pack(fill="x")
         self.exp_btn = ttk.Button(buttons, text="2 · Esperimento", style="Accent.TButton", command=self.run_experiment)
@@ -675,7 +774,7 @@ class App:
         self.cal_stat = {}
         for r, (key, label) in enumerate((("stato", "Stato"), ("punti", "Punti usati"), ("ordine", "Modello"),
                                           ("res", "Residuo medio"), ("loo", "Errore leave-one-out"),
-                                          ("max", "Residuo massimo"), ("blinks", "Ammiccamenti / punti ripetuti"))):
+                                          ("max", "Residuo massimo"), ("blinks", "Ammiccamenti / ripetuti"))):
             self.cal_stat[key] = self._value(card, r, label)
 
         ttk.Label(right, text="ERRORE DELL'ESPERIMENTO  (mediana per prova, px)", style="Section.TLabel").pack(
@@ -711,7 +810,7 @@ class App:
             self.v["monitor"].set(labels[1] if len(labels) > 1 else labels[0])
         n = len(self.monitors)
         self.set_chip("screen", "ready" if n > 1 else "warning",
-                      f"{n} schermo" + ("" if n == 1 else "i") + (" · stesso schermo" if n == 1 else ""))
+                      "1 schermo" if n == 1 else f"{n} schermi")
         self._draw_map()
 
     def monitor(self):
@@ -950,10 +1049,26 @@ class App:
             subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
 
     # ---- screen map ----
+    def _fit_views(self, event):
+        """Largest scale (up to VIEW_SCALE) at which both views and the trace fit."""
+        scale = min(VIEW_SCALE, (event.width - 16) / 640.0, (event.height - 300) / 240.0)
+        scale = max(0.6, round(scale, 2))
+        if abs(scale - self.view_scale) > 0.01:
+            self.view_scale = scale
+            for holder in self.view_holders:
+                holder.configure(width=int(320 * scale), height=int(240 * scale))
+
+    def _fit_map(self, event):
+        """Map size from the space left by the calibration card and the result tables."""
+        box = (max(260, min(560, event.width - 380)), max(140, min(315, event.height - 420)))
+        if box != self.map_box:
+            self.map_box = box
+            self._draw_map()
+
     def _map_transform(self):
         mon = self.monitor()
         c = self.map_canvas
-        W = 560
+        W = int(min(self.map_box[0], self.map_box[1] * mon[2] / mon[3]))
         H = int(W * mon[3] / mon[2])
         c.configure(width=W, height=H)
         k = W / mon[2]

@@ -3,7 +3,7 @@
 Real-time gaze tracking from a close-up eye camera with
 [VOGeo-Gaze](https://github.com/DSGZ-MotionLab/VOGeo-Gaze) (MICCAI 2026), plus a calibration and an
 accuracy trial that measures where on the screen the system thinks the participant is looking.
-The GUI follows the SmartAnkle launcher (same theme, Italian labels).
+The GUI follows the SmartAnkle launcher: same theme and Italian labels, and a **MODALITÀ** selector (*Live* | *Prova*) at the top of the left column, like SmartAnkle's experiment selector, instead of tabs. The last mode is remembered.
 
 ```
 python app.py
@@ -36,12 +36,12 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_
 **CPU only.** Same, with `--index-url https://download.pytorch.org/whl/cpu`. The model then runs at
 about 10–15 frames/s on a laptop CPU, enough to try the program but slow for saccades.
 
-In the **Live** tab, *Dispositivo* lists every NVIDIA GPU torch can see (`GPU 0 · <name>`),
+In **Live** mode, *Dispositivo* lists every NVIDIA GPU torch can see (`GPU 0 · <name>`),
 *Automatico* (GPU when available) and *CPU*. *Mezza precisione fp16* runs the network in half
 precision on the GPU (faster on RTX cards). The *GPU NVIDIA* chip in the header turns red when the
 installed PyTorch is CPU-only.
 
-## Live tab
+## Live mode
 
 - **Ingresso**: every camera Windows reports (names via DirectShow), a recorded eye video
   (*File video...*, played in real time, looping) or *Simulatore occhio (test)*, a synthetic eye
@@ -68,13 +68,13 @@ The centre needs a few seconds of eye movement to settle (*Centro occhio: stimat
 **frozen at the start of calibration** and stays frozen for the experiment, so the calibration
 mapping remains valid. *Reimposta centro occhio* starts over and invalidates the calibration.
 
-## Prova tab
+## Prova mode
 
 1. **Calibrazione**: 5, 9, 13 (default), 17 or 25 points on the participant screen, centre first,
    the rest shuffled. Each dot shrinks for 0.6 s and is then held for *Durata per punto*. The
    robust median of the valid samples of every point (blinks and low-confidence frames dropped)
    is mapped to the screen with a second-order polynomial in (θH, θV) (affine with fewer than 8
-   points). The tab shows the mean / max residual and the leave-one-out error, and draws each
+   points). Prova shows the mean / max residual and the leave-one-out error, and draws each
    point with its fitted gaze. From then on, the red dot on the map is the live gaze.
 2. **Esperimento**: the selected target types, shuffled:
 
